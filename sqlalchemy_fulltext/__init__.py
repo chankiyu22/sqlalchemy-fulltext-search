@@ -2,6 +2,7 @@
 
 from __future__ import absolute_import
 
+import itertools
 import re
 
 from sqlalchemy import event, literal
@@ -14,10 +15,10 @@ from . import modes as FullTextMode
 
 MYSQL = "mysql"
 MYSQL_BUILD_INDEX_QUERY = u"""ALTER TABLE {0.__tablename__} ADD FULLTEXT ({1})"""
-MYSQL_MATCH_AGAINST = u"""
-                      MATCH ({0})
-                      AGAINST ({1} {2})
-                      """
+MYSQL_MATCH_AGAINST = u'MATCH ({0}) AGAINST ({1} {2})'
+
+SQLITE = 'sqlite'
+SQLITE_MATCH_AGAINST = u"{0} like '%' || {1} || '%'"
 
 def escape_quote(string):
     return re.sub(r"[\"\']+", "", string)
@@ -53,6 +54,16 @@ def __mysql_fulltext_search(element, compiler, **kw):
         element.mode)
 
 
+@compiles(FullTextSearch, SQLITE)
+def __sqlite_fulltext_search(element, compiler, **kw):
+    assert issubclass(element.model, FullText), "{0} not FullTextable".format(element.model)
+    cols = element.model.__fulltext_columns__
+    return ' or '.join([
+        SQLITE_MATCH_AGAINST.format(
+            get_table_name(element) + col, compiler.process(element.against)) for col in cols
+    ])
+
+
 class FullText(object):
     """
     FullText Minxin object for SQLAlchemy
@@ -76,12 +87,14 @@ class FullText(object):
             return
         assert cls.__fulltext_columns__, "Model:{0.__name__} No FullText columns defined".format(cls)
 
+        mysql_trigger = DDL(MYSQL_BUILD_INDEX_QUERY.format(cls,
+            ", ".join((escape_quote(c)
+                       for c in cls.__fulltext_columns__)))
+            )
+
         event.listen(cls.__table__,
                      'after_create',
-                     DDL(MYSQL_BUILD_INDEX_QUERY.format(cls,
-                         ", ".join((escape_quote(c)
-                                    for c in cls.__fulltext_columns__)))
-                         )
+                     mysql_trigger.execute_if(dialect=MYSQL)
                      )
     """
     TODO: black magic in the future
